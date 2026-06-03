@@ -20,13 +20,43 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           echo -e "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null\n" > ~/.ssh/config
 
-      # --- ETAPA 1: DESPLIEGUE EN EL FRONTEND (IP PÚBLICA) ---
+      # --- ETAPA PREVIA: INSTALACIÓN DE DEPENDENCIAS EN EL FRONT ---
+      - name: Instalar Git y Docker en Frontend si faltan
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} '
+            if ! command -v git &> /dev/null; then
+              echo "Instalando Git..."
+              sudo dnf install -y git
+            fi
+            
+            if ! command -v docker &> /dev/null; then
+              echo "Instalando Docker..."
+              sudo dnf install -y docker
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo usermod -aG docker $USER
+              # Aplicar permisos de grupo de inmediato para la sesión actual
+              sudo chmod 666 /var/run/docker.sock
+            fi
+          '
+
+      # --- ETAPA 1: DESPLIEGUE EN EL FRONTEND ---
       - name: Desplegar Frontend vía SSH Puro
         run: |
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} '
-            cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/RamiroGomeztxt/Devops-prueba2.git "proyecto semestral" && cd "proyecto semestral")
-            git reset --hard HEAD
-            git pull origin main
+            # Crear directorio raíz si no existe ninguna de las dos opciones
+            mkdir -p ~/Devops-prueba2
+            cd ~/Devops-prueba2
+            
+            # Inicializar o actualizar repositorio
+            if [ ! -d ".git" ]; then
+              git clone https://github.com/RamiroGomeztxt/Devops-prueba2.git .
+            else
+              git reset --hard HEAD
+              git pull origin main
+            fi
+            
+            # Construcción y ejecución del contenedor
             cd front_despacho
             docker build -t frontend-app .
             docker stop frontend-container || true
@@ -37,17 +67,14 @@ jobs:
       # --- ETAPA 2: PASAR ARCHIVOS AL BACKEND (A TRAVÉS DE LA RED PRIVADA) ---
       - name: Transferir archivos y Desplegar Backend Privado
         run: |
-          # 1. Creamos el archivo temporal con la llave dentro de la EC2 del Frontend
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "echo '${{ secrets.SSH_PRIVATE_KEY }}' > ~/key_temporal.pem && chmod 600 ~/key_temporal.pem"
           
-          # 2. Le ordenamos a la EC2 del Front que envíe los archivos a la EC2 privada del Back
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
-            cd ~/proyecto\ semestral || cd ~/Devops-prueba2
+            cd ~/Devops-prueba2
             ssh -i ~/key_temporal.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} 'mkdir -p ~/app-backend'
             scp -i ~/key_temporal.pem -o StrictHostKeyChecking=no -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }}:~/app-backend/
           "
 
-          # 3. Le ordenamos a la EC2 del Front que se meta al Back y levante los contenedores
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
             ssh -i ~/key_temporal.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} '
               cd ~/app-backend
@@ -56,5 +83,4 @@ jobs:
             '
           "
 
-          # 4. Limpieza: Borramos la llave del Front
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "rm -f ~/key_temporal.pem"
