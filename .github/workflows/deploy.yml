@@ -12,16 +12,20 @@ jobs:
       - name: Checkout del código
         uses: actions/checkout@v4
 
+      # --- CONFIGURACIÓN DE LA LLAVE SSH EN EL ENTORNO LINUX ---
+      - name: Configurar Agente SSH Nativo
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          # Desactivar la validación interactiva de hosts para evitar bloqueos
+          echo -e "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null\n" > ~/.ssh/config
+
       # --- ETAPA 1: DESPLIEGUE EN EL FRONTEND (IP PÚBLICA) ---
-      - name: Desplegar Frontend y preparar archivos de Backend
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_FRONT_IP }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          fingerprint: "" # TRUCO: Al pasarlo vacío fuerza a aceptar la llave ignorando formatos de Windows
-          script: |
-            cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/${{ github.repository }}.git "proyecto semestral" && cd "proyecto semestral")
+      - name: Desplegar Frontend vía SSH Puro
+        run: |
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
+            cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/${{ github.repository }}.git 'proyecto semestral' && cd 'proyecto semestral')
             
             git reset --hard HEAD
             git pull origin main
@@ -31,32 +35,29 @@ jobs:
             docker stop frontend-container || true
             docker rm frontend-container || true
             docker run -d -p 80:80 --name frontend-container frontend-app
+          "
 
-      # --- ETAPA 2: PASAR ARCHIVOS AL BACKEND (IP PRIVADA VIA SSH) ---
-      - name: Enviar código al Backend y desplegar
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.EC2_FRONT_IP }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          fingerprint: "" # Mismo truco aquí
-          proxy_host: ${{ secrets.EC2_FRONT_IP }}
-          proxy_username: ${{ secrets.EC2_USER }}
-          proxy_key: ${{ secrets.SSH_PRIVATE_KEY }}
-          host: ${{ secrets.EC2_BACK_PRIVATE_IP }} 
-          script: |
+      # --- ETAPA 2: PASAR ARCHIVOS AL BACKEND (A TRAVÉS DE LA RED PRIVADA) ---
+      - name: Transferir archivos y Desplegar Backend Privado
+        run: |
+          # 1. Creamos de forma remota un archivo temporal con la llave dentro de la EC2 del Frontend
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "echo '${{ secrets.SSH_PRIVATE_KEY }}' > ~/key_temporal.pem && chmod 600 ~/key_temporal.pem"
+          
+          # 2. Le ordenamos a la EC2 del Front que envíe por red interna los archivos a la EC2 del Back
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
             cd ~/proyecto\ semestral || cd ~/Devops-prueba2
+            ssh -i ~/key_temporal.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} 'mkdir -p ~/app-backend'
+            scp -i ~/key_temporal.pem -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }}:~/app-backend/
+          "
 
-            echo "${{ secrets.SSH_PRIVATE_KEY }}" > private_key.pem
-            chmod 600 private_key.pem
-
-            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} "mkdir -p ~/app-backend"
-            scp -i private_key.pem -o StrictHostKeyChecking=no -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }}:~/app-backend/
-
-            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} "
+          # 3. Le ordenamos a la EC2 del Front que se meta al Back y ejecute el Docker Compose
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
+            ssh -i ~/key_temporal.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} '
               cd ~/app-backend
               docker-compose down || true
               docker-compose up -d --build
-            "
+            '
+          "
 
-            rm -f private_key.pem
+          # 4. Limpieza: Borramos la llave temporal de la máquina del Front por seguridad
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "rm -f ~/key_temporal.pem"
