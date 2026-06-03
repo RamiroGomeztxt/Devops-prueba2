@@ -1,0 +1,63 @@
+name: CI/CD Pipeline - Innovatech Chile
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-all:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del código
+        uses: actions/checkout@v4
+
+      # --- ETAPA 1: DESPLIEGUE EN EL FRONTEND (IP PÚBLICA) ---
+      - name: Desplegar Frontend y preparar archivos de Backend
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_FRONT_IP }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # Entrar a la carpeta del proyecto en el Front
+            cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/${{ github.repository }}.git "proyecto semestral" && cd "proyecto semestral")
+            
+            # Actualizar el código desde GitHub
+            git reset --hard HEAD
+            git pull origin main
+
+            # Construir y levantar el contenedor del Frontend (React + Nginx Proxy)
+            cd front_despacho
+            docker build -t frontend-app .
+            docker stop frontend-container || true
+            docker rm frontend-container || true
+            docker run -d -p 80:80 --name frontend-container frontend-app
+
+      # --- ETAPA 2: PASAR ARCHIVOS AL BACKEND (IP PRIVADA VIA SSH) ---
+      - name: Enviar código al Backend y desplegar
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_FRONT_IP }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd ~/proyecto\ semestral || cd ~/Devops-prueba2
+
+            # Guardamos temporalmente la llave privada en el Front para poder hablarle al Back privado
+            echo "${{ secrets.SSH_PRIVATE_KEY }}" > private_key.pem
+            chmod 600 private_key.pem
+
+            # Enviamos el docker-compose y las carpetas de los backends a la EC2 privada (REEMPLAZA LA IP POR TU IP PRIVADA REAL)
+            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@10.0.142.124 "mkdir -p ~/app-backend"
+            scp -i private_key.pem -o StrictHostKeyChecking=no -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@10.0.142.124:~/app-backend/
+
+            # Entramos por SSH a la máquina de Backend desde el Front y levantamos Docker Compose
+            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@10.0.142.124 "
+              cd ~/app-backend
+              docker-compose down || true
+              docker-compose up -d --build
+            "
+
+            # Borramos la llave del Front por seguridad
+            rm -f private_key.pem
