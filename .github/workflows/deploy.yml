@@ -1,80 +1,39 @@
-name: CI/CD Pipeline - Innovatech Chile
-
-on:
-  push:
-    branches:
-      - main
-
-jobs:
-  deploy-all:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout del código
-        uses: actions/checkout@v4
-
-      # --- CONFIGURACIÓN DE LA LLAVE SSH EN EL ENTORNO LINUX ---
-      - name: Configurar Agente SSH Nativo
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
-          echo -e "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null\n" > ~/.ssh/config
-
-      # --- ETAPA PREVIA: INSTALACIÓN DE DEPENDENCIAS EN EL FRONT ---
-      - name: Instalar Git y Docker en Frontend si faltan
-        run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} '
-            if ! command -v git &> /dev/null; then
-              echo "Instalando Git..."
-              sudo dnf install -y git
-            fi
-            
-            if ! command -v docker &> /dev/null; then
-              echo "Instalando Docker..."
-              sudo dnf install -y docker
-              sudo systemctl start docker
-              sudo systemctl enable docker
-              sudo usermod -aG docker $USER
-              # Aplicar permisos de grupo de inmediato para la sesión actual
-              sudo chmod 666 /var/run/docker.sock
-            fi
-          '
-
-      # --- ETAPA 1: DESPLIEGUE EN EL FRONTEND ---
-      - name: Desplegar Frontend vía SSH Puro
-        run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} '
-            # Crear directorio raíz si no existe ninguna de las dos opciones
-            mkdir -p ~/Devops-prueba2
-            cd ~/Devops-prueba2
-            
-            # Inicializar o actualizar repositorio
-            if [ ! -d ".git" ]; then
-              git clone https://github.com/RamiroGomeztxt/Devops-prueba2.git .
-            else
-              git reset --hard HEAD
-              git pull origin main
-            fi
-            
-            # Construcción y ejecución del contenedor
-            cd front_despacho
-            docker build -t frontend-app .
-            docker stop frontend-container || true
-            docker rm frontend-container || true
-            docker run -d -p 80:80 --name frontend-container frontend-app
-          '
-
-      # --- ETAPA 2: PASAR ARCHIVOS AL BACKEND (A TRAVÉS DE LA RED PRIVADA) ---
+# --- ETAPA 2: TRANSFERIR ARCHIVOS Y DESPLEGAR BACKEND PRIVADO ---
       - name: Transferir archivos y Desplegar Backend Privado
         run: |
+          # 1. Crear la llave temporal en el Front
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "echo '${{ secrets.SSH_PRIVATE_KEY }}' > ~/key_temporal.pem && chmod 600 ~/key_temporal.pem"
           
+          # 2. Asegurar que el Backend tenga Docker y Docker Compose instalados
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
+            ssh -i ~/key_temporal.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} '
+              if ! command -v docker &> /dev/null; then
+                echo \"Instalando Docker en el Backend...\"
+                sudo dnf install -y docker
+                sudo systemctl start docker
+                sudo systemctl enable docker
+                sudo usermod -aG docker \$USER
+                sudo chmod 666 /var/run/docker.sock
+              fi
+
+              if ! command -v docker-compose &> /dev/null; then
+                echo \"Instalando Docker Compose en el Backend...\"
+                sudo curl -L \"https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)\" -o /usr/local/bin/docker-compose
+                sudo chmod +x /usr/local/bin/docker-compose
+                # Crear un enlace simbólico por si el PATH de SSH no lo encuentra directo
+                sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose || true
+              fi
+            '
+          "
+
+          # 3. Crear el directorio de la app y transferir los archivos de Spring Boot
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
             cd ~/Devops-prueba2
             ssh -i ~/key_temporal.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} 'mkdir -p ~/app-backend'
             scp -i ~/key_temporal.pem -o StrictHostKeyChecking=no -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }}:~/app-backend/
           "
-
+          
+          # 4. Compilar y levantar los contenedores en el Backend
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
             ssh -i ~/key_temporal.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} '
               cd ~/app-backend
@@ -82,5 +41,6 @@ jobs:
               docker-compose up -d --build
             '
           "
-
+          
+          # 5. Limpieza de seguridad de la llave temporal
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "rm -f ~/key_temporal.pem"
