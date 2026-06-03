@@ -18,7 +18,6 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          # Desactivar la validación interactiva de hosts para evitar bloqueos
           echo -e "Host *\n\tStrictHostKeyChecking no\n\tUserKnownHostsFile /dev/null\n" > ~/.ssh/config
 
       # --- ETAPA 1: DESPLIEGUE EN EL FRONTEND (IP PÚBLICA) ---
@@ -26,10 +25,8 @@ jobs:
         run: |
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
             cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/${{ github.repository }}.git 'proyecto semestral' && cd 'proyecto semestral')
-            
             git reset --hard HEAD
             git pull origin main
-
             cd front_despacho
             docker build -t frontend-app .
             docker stop frontend-container || true
@@ -40,24 +37,24 @@ jobs:
       # --- ETAPA 2: PASAR ARCHIVOS AL BACKEND (A TRAVÉS DE LA RED PRIVADA) ---
       - name: Transferir archivos y Desplegar Backend Privado
         run: |
-          # 1. Creamos de forma remota un archivo temporal con la llave dentro de la EC2 del Frontend
+          # 1. Creamos el archivo temporal con la llave dentro de la EC2 del Frontend
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "echo '${{ secrets.SSH_PRIVATE_KEY }}' > ~/key_temporal.pem && chmod 600 ~/key_temporal.pem"
           
-          # 2. Le ordenamos a la EC2 del Front que envíe por red interna los archivos a la EC2 del Back
+          # 2. Le ordenamos a la EC2 del Front que envíe los archivos a la EC2 privada del Back
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
             cd ~/proyecto\ semestral || cd ~/Devops-prueba2
-            ssh -i ~/key_temporal.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} 'mkdir -p ~/app-backend'
-            scp -i ~/key_temporal.pem -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }}:~/app-backend/
+            ssh -i ~/key_temporal.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} 'mkdir -p ~/app-backend'
+            scp -i ~/key_temporal.pem -o StrictHostKeyChecking=no -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }}:~/app-backend/
           "
 
-          # 3. Le ordenamos a la EC2 del Front que se meta al Back y ejecute el Docker Compose
+          # 3. Le ordenamos a la EC2 del Front que se meta al Back y levante los contenedores
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
-            ssh -i ~/key_temporal.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} '
+            ssh -i ~/key_temporal.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} '
               cd ~/app-backend
               docker-compose down || true
               docker-compose up -d --build
             '
           "
 
-          # 4. Limpieza: Borramos la llave temporal de la máquina del Front por seguridad
+          # 4. Limpieza: Borramos la llave del Front
           ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "rm -f ~/key_temporal.pem"
