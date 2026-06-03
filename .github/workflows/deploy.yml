@@ -23,8 +23,8 @@ jobs:
       # --- ETAPA 1: DESPLIEGUE EN EL FRONTEND (IP PÚBLICA) ---
       - name: Desplegar Frontend vía SSH Puro
         run: |
-          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} "
-            cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/${{ github.repository }}.git 'proyecto semestral' && cd 'proyecto semestral')
+          ssh ${{ secrets.EC2_USER }}@${{ secrets.EC2_FRONT_IP }} '
+            cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/RamiroGomeztxt/Devops-prueba2.git "proyecto semestral" && cd "proyecto semestral")
             git reset --hard HEAD
             git pull origin main
             cd front_despacho
@@ -32,7 +32,7 @@ jobs:
             docker stop frontend-container || true
             docker rm frontend-container || true
             docker run -d -p 80:80 --name frontend-container frontend-app
-          "
+          '
 
       # --- ETAPA 2: PASAR ARCHIVOS AL BACKEND (A TRAVÉS DE LA RED PRIVADA) ---
       - name: Transferir archivos y Desplegar Backend Privado
