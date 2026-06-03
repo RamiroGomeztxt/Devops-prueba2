@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  back-ventas:
+    build:
+      context: ./back-Ventas_SpringBoot/Springboot-API-REST
+      dockerfile: dockerfile
+    container_name: back-ventas
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_ENDPOINT=tu-rds-endpoint.us-east-1.rds.amazonaws.com
+      - DB_PORT=3306
+      - DB_NAME=ventas_db
+      - DB_USERNAME=admin
+      - DB_PASSWORD=tu_password_aqui
+    volumes:
+      - ventas-logs:/app/logs
+
+  back-despachos:
+    build:
+      context: ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+      dockerfile: dockerfile
+    container_name: back-despachos
+    ports:
+      - "8081:8081"
+    environment:
+      - DB_ENDPOINT=tu-rds-endpoint.us-east-1.rds.amazonaws.com
+      - DB_PORT=3306
+      - DB_NAME=despachos_db
+      - DB_USERNAME=admin
+      - DB_PASSWORD=tu_password_aqui
+    volumes:
+      - despachos-logs:/app/logs
+
+# Punto 2 de la pauta: Volúmenes nombrados para persistencia local de logs/auditoría
+volumes:
+  ventas-logs:
+  despachos-logs:
