@@ -19,15 +19,13 @@ jobs:
           host: ${{ secrets.EC2_FRONT_IP }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          fingerprint: "" # TRUCO: Al pasarlo vacío fuerza a aceptar la llave ignorando formatos de Windows
           script: |
-            # Entrar a la carpeta del proyecto en el Front
             cd ~/proyecto\ semestral || cd ~/Devops-prueba2 || (cd ~ && git clone https://github.com/${{ github.repository }}.git "proyecto semestral" && cd "proyecto semestral")
             
-            # Actualizar el código desde GitHub
             git reset --hard HEAD
             git pull origin main
 
-            # Construir y levantar el contenedor del Frontend (React + Nginx Proxy)
             cd front_despacho
             docker build -t frontend-app .
             docker stop frontend-container || true
@@ -41,23 +39,24 @@ jobs:
           host: ${{ secrets.EC2_FRONT_IP }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          fingerprint: "" # Mismo truco aquí
+          proxy_host: ${{ secrets.EC2_FRONT_IP }}
+          proxy_username: ${{ secrets.EC2_USER }}
+          proxy_key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ secrets.EC2_BACK_PRIVATE_IP }} 
           script: |
             cd ~/proyecto\ semestral || cd ~/Devops-prueba2
 
-            # Guardamos temporalmente la llave privada en el Front para poder hablarle al Back privado
             echo "${{ secrets.SSH_PRIVATE_KEY }}" > private_key.pem
             chmod 600 private_key.pem
 
-            # Enviamos el docker-compose y las carpetas de los backends a la EC2 privada (REEMPLAZA LA IP POR TU IP PRIVADA REAL)
-            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@10.0.142.124 "mkdir -p ~/app-backend"
-            scp -i private_key.pem -o StrictHostKeyChecking=no -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@10.0.142.124:~/app-backend/
+            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} "mkdir -p ~/app-backend"
+            scp -i private_key.pem -o StrictHostKeyChecking=no -r docker-compose.yml back-Despachos_SpringBoot back-Ventas_SpringBoot ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }}:~/app-backend/
 
-            # Entramos por SSH a la máquina de Backend desde el Front y levantamos Docker Compose
-            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@10.0.142.124 "
+            ssh -i private_key.pem -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_BACK_PRIVATE_IP }} "
               cd ~/app-backend
               docker-compose down || true
               docker-compose up -d --build
             "
 
-            # Borramos la llave del Front por seguridad
             rm -f private_key.pem
